@@ -1,0 +1,49 @@
+<script>
+  // DOM Elements
+  const statusEl = document.getElementById('status-message');
+  const analyzeBtn = document.getElementById('analyze-btn');
+  const docIdInput = document.getElementById('doc-id-input');
+  const analysisView = document.getElementById('analysis-view');
+
+  // Event Listeners
+  analyzeBtn.addEventListener('click', handleAnalyzeClick);
+
+  function handleAnalyzeClick() {
+    const docId = docIdInput.value.trim();
+    if (!docId) {
+      showStatus('Please enter a Document ID.', 'error');
+      return;
+    }
+
+    showStatus('Fetching revision history...', 'loading');
+    
+    google.script.run
+      .withSuccessHandler(renderAnalysis)
+      .withFailureHandler(handleError)
+      .apiGetRevisions(docId);
+  }
+
+  function renderAnalysis(revisions) {
+    showStatus(`Loaded ${revisions.length} revisions.`, 'success');
+    
+    // Simple render for now
+    let html = '<h3>Revision History</h3><ul>';
+    revisions.forEach(rev => {
+      const date = new Date(rev.modifiedDate).toLocaleString();
+      html += `<li><strong>${date}</strong> by ${rev.lastModifyingUserName}</li>`;
+    });
+    html += '</ul>';
+    
+    analysisView.innerHTML = html;
+  }
+
+  function handleError(error) {
+    showStatus('Error: ' + error.message, 'error');
+    console.error(error);
+  }
+
+  function showStatus(msg, type) {
+    statusEl.textContent = msg;
+    statusEl.className = 'status-bar ' + (type || '');
+  }
+</script>

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <title>Learning Evidence Analyzer</title>
+    <?!= include('Stylesheet'); ?>
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="app-header">
+        <h1>Learning Evidence Analyzer</h1>
+        <div class="header-controls">
+          <button id="folder-picker-btn" class="btn primary">Select Folder</button>
+          <input type="text" id="doc-id-input" placeholder="Or paste Doc ID directly..." />
+          <button id="analyze-btn" class="btn secondary">Analyze Doc</button>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <div id="status-message" class="status-bar">Ready</div>
+        
+        <!-- Main Content Area -->
+        <div class="content-grid">
+          
+          <!-- Left: Document List / Batch View -->
+          <section class="panel list-panel">
+            <h2>Documents</h2>
+            <div id="document-list" class="list-container">
+              <div class="empty-state">No documents loaded. Select a folder or enter an ID.</div>
+            </div>
+          </section>
+
+          <!-- Right: Analysis / Detail View -->
+          <section class="panel detail-panel">
+            <h2>Analysis Detail</h2>
+            <div id="analysis-view" class="detail-container">
+              <div class="placeholder">Select a document to view analysis.</div>
+            </div>
+          </section>
+        
+        </div>
+      </main>
+    </div>
+
+    <?!= include('JavaScript'); ?>
+  </body>
+</html>
