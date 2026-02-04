@@ -20,10 +20,11 @@ function getRevisionHistory(docId) {
 
   try {
     do {
-      // Request 'fields: "*"' to ensure maximum metadata from Drive API v2/v3
+      // Request specific fields to reduce payload size (Bolt Optimization)
+      // v2 fields: items(id,modifiedDate,lastModifyingUserName,lastModifyingUser(displayName),fileSize)
       var response = Drive.Revisions.list(docId, {
         pageToken: pageToken,
-        fields: "*" 
+        fields: "items(id,modifiedDate,lastModifyingUserName,lastModifyingUser(displayName),fileSize),nextPageToken"
       });
       
       // Handle v2 'items' or v3 'revisions'
