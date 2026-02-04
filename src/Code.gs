@@ -1,6 +1,6 @@
 /**
  * Code.gs
- * Main entry point for the Learning Evidence Analyzer Web App.
+ * Main entry point for the ReVisor Web App.
  */
 
 /**
@@ -9,7 +9,7 @@
 function doGet(e) {
   return HtmlService.createTemplateFromFile('Index')
       .evaluate()
-      .setTitle('Learning Evidence Analyzer')
+      .setTitle('ReVisor')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }

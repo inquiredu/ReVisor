@@ -1,10 +1,10 @@
-# Learning Evidence Analyzer
+# ReVisor
 
 A Google Apps Script web application that helps teachers understand student writing processes through intelligent revision history analysis and playback.
 
 ## What It Does
 
-Learning Evidence Analyzer transforms Google Docs revision history into actionable insights about student learning. Rather than simply detecting plagiarism, it reveals the *process* of writing - showing teachers when students are genuinely developing ideas versus taking shortcuts.
+ReVisor transforms Google Docs revision history into actionable insights about student learning. Rather than simply detecting plagiarism, it reveals the *process* of writing - showing teachers when students are genuinely developing ideas versus taking shortcuts.
 
 ### Key Features
 
@@ -27,7 +27,7 @@ Writing is thinking made visible. This tool helps teachers:
 
 ### For Teachers (Users)
 
-1. Click this link: [Learning Evidence Analyzer Web App](#) _(insert your deployment URL)_
+1. Click this link: [ReVisor Web App](#) _(insert your deployment URL)_
 2. Authorize access to your Google Drive (read-only)
 3. Select a folder containing student Google Docs
 4. Start analyzing!
@@ -54,7 +54,7 @@ cd learning-evidence-analyzer
 clasp login
 
 # Create new Apps Script project
-clasp create --type standalone --title "Learning Evidence Analyzer"
+clasp create --type standalone --title "ReVisor"
 
 # Push code to Apps Script
 clasp push
