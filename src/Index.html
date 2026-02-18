@@ -2,46 +2,128 @@
 <html>
   <head>
     <base target="_top">
-    <title>ReVisor</title>
+    <title>ReVisor - Revision Analysis Studio</title>
     <?!= include('Stylesheet'); ?>
   </head>
   <body>
-    <div class="app-container">
+    <div id="loading-fallback" style="padding: 2rem; text-align: center; font-family: sans-serif;">
+      <h2>ReVisor</h2>
+      <p>Initializing Studio Application...</p>
+    </div>
+    
+    <div class="app-wrapper hidden" id="main-app-container">
+      <!-- HEADER: Identification & Main Controls -->
       <header class="app-header">
-        <h1>ReVisor</h1>
-        <div class="header-controls">
-          <button id="folder-picker-btn" class="btn primary">Select Folder</button>
-          <input type="text" id="doc-id-input" placeholder="Or paste Doc ID directly..." />
-          <button id="analyze-btn" class="btn secondary">Analyze Doc</button>
+        <div class="header-logo">
+          <h1 style="margin:0; font-size: 1.25rem; color: #1a73e8;">ReVisor</h1>
         </div>
+        <div class="header-inputs">
+          <input type="text" id="doc-id-input" placeholder="Paste Google Doc ID or URL..." style="padding:8px; border:1px solid #ddd; border-radius:4px; width: 350px;" />
+          <button id="folder-picker-btn" class="btn">Folder</button>
+          <button id="analyze-btn" class="btn primary">Start Analysis</button>
+        </div>
+        <div id="status-message" class="status-bar" style="font-size: 0.8rem; color: #5f6368;">Ready</div>
       </header>
 
-      <main class="dashboard">
-        <div id="status-message" class="status-bar">Ready</div>
-        
-        <!-- Main Content Area -->
-        <div class="content-grid">
+      <div class="main-container">
+        <!-- SIDEBAR: Context, AI Insights, & History -->
+        <aside class="sidebar">
           
-          <!-- Left: Document List / Batch View -->
-          <section class="panel list-panel">
-            <h2>Documents</h2>
-            <div id="document-list" class="list-container">
-              <div class="empty-state">No documents loaded. Select a folder or enter an ID.</div>
+          <!-- Database Section -->
+          <div class="sidebar-section" id="database-section">
+            <h3 style="display:flex; justify-content:space-between; align-items:center;">
+               Analytics Database
+               <button id="connect-db-btn" class="btn" style="padding: 2px 8px; font-size: 0.7rem;">Manage</button>
+            </h3>
+            <div id="db-info" class="sidebar-meta" style="font-size: 0.8rem; color: #5f6368; display:none;">
+               Connected: <a id="db-link" href="#" target="_blank" style="color: #1a73e8;">...</a>
+               <div style="margin-top: 5px;">
+                  Active Unit: <select id="active-unit-tab" style="padding: 2px; font-size: 0.8rem;"></select>
+               </div>
             </div>
-          </section>
+            <div id="db-prompt" style="font-size: 0.8rem; color: #5f6368; text-align:center;">
+               No database connected. 
+            </div>
+          </div>
 
-          <!-- Right: Analysis / Detail View -->
-          <section class="panel detail-panel">
-            <h2>Analysis Detail</h2>
-            <div id="analysis-view" class="detail-container">
-              <div class="placeholder">Select a document to view analysis.</div>
+          <!-- Criteria Input -->
+          <div class="sidebar-section">
+            <h3>Rubric / Analysis Focus</h3>
+            <textarea id="rubric-input" placeholder="Optional: Criteria for Gemini to evaluate (e.g. usage of sources, shift in complexity, etc.)"></textarea>
+          </div>
+
+          <!-- AI Summary Panel -->
+          <div id="ai-insights-panel" class="sidebar-section ai-panel hidden">
+            <h3>AI Insights</h3>
+            <div id="ai-content">
+              <div class="placeholder" style="color:#888; font-size:0.85rem;">Analysis results will appear here.</div>
             </div>
-          </section>
-        
-        </div>
-      </main>
+          </div>
+
+          <!-- History List -->
+          <div class="sidebar-section" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+              <h3 style="margin:0;">Revision History</h3>
+              <button id="jump-latest-btn" class="btn" style="padding: 2px 8px; font-size: 0.75rem;">Latest</button>
+            </div>
+            <div id="document-list" style="flex:1; overflow-y:auto; padding-right:5px;">
+              <div class="empty-state" style="color:#888; font-size:0.85rem;">No document loaded.</div>
+            </div>
+          </div>
+
+        </aside>
+
+        <!-- MAIN STAGE: Document Display & Playback -->
+        <main class="stage">
+          
+          <!-- Overlay for initial loading -->
+          <div id="progress-overlay" class="progress-overlay hidden">
+            <div class="progress-card">
+              <h3 id="progress-step" style="margin-top:0;">Analyzing Process...</h3>
+              <div class="progress-mini-bar">
+                <div id="progress-bar-fill" class="progress-fill"></div>
+              </div>
+              <p id="progress-detail">Fetching history...</p>
+            </div>
+          </div>
+
+          <!-- Document Content Scroller -->
+          <div class="document-scroller">
+            <div id="paper-content" class="paper">
+              <div class="placeholder" style="text-align:center; padding-top: 100px; color: #888;">
+                <h2>Welcome to ReVisor</h2>
+                <p>Paste a Google Doc ID or URL to see the iterative writing process.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Playback Bar Sticky at Bottom -->
+          <footer class="playback-bar">
+             <button id="play-pause-btn" class="btn" style="border-radius: 50%; width: 44px; height: 44px; font-size: 1.25rem;">▶</button>
+             
+             <div style="flex:1; display:flex; flex-direction:column;">
+               <input type="range" id="timeline-slider" min="0" max="0" value="0" disabled style="width:100%;" />
+               <div style="display:flex; justify-content:space-between; font-size: 0.75rem; color: #5f6368; margin-top: 5px;">
+                  <span id="current-rev-info">Revision 0 of 0</span>
+                  <span id="current-rev-date">--</span>
+               </div>
+             </div>
+
+             <div class="speed-control">
+                <select id="playback-speed" class="btn" style="padding: 4px 8px; font-size: 0.85rem;">
+                   <option value="2000">Slow (0.5x)</option>
+                   <option value="1000" selected>Normal (1x)</option>
+                   <option value="400">Fast (2.5x)</option>
+                   <option value="150">Turbo (5x)</option>
+                </select>
+             </div>
+          </footer>
+
+        </main>
+      </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/diff-match-patch@1.0.5/index.min.js"></script>
     <?!= include('JavaScript'); ?>
   </body>
 </html>

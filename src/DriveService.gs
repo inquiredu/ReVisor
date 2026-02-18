@@ -1,7 +1,27 @@
 /**
- * DriveService.gs
- * Handles interactions with the Google Drive API for revision history.
+ * Lists all Google Docs within a given folder ID.
+ * 
+ * @param {string} folderId - The ID of the folder to search.
+ * @returns {Array<Object>} List of documents.
  */
+function listDocumentsInFolder(folderId) {
+  if (!folderId) throw new Error("Folder ID is required.");
+  
+  var folder = DriveApp.getFolderById(folderId);
+  var files = folder.getFilesByType(MimeType.GOOGLE_DOCS);
+  var docs = [];
+  
+  while (files.hasNext()) {
+    var file = files.next();
+    docs.push({
+      id: file.getId(),
+      name: file.getName(),
+      lastUpdated: file.getLastUpdated()
+    });
+  }
+  
+  return docs;
+}
 
 /**
  * Fetches the revision history for a specific Google Doc ID.
@@ -91,7 +111,7 @@ function normalizeRevision(rev) {
 }
 
 /**
- * Fetches content of a specific revision.
+ * Fetches content of a specific revision with retry logic for 429 errors.
  * 
  * @param {string} docId - The Google Doc ID.
  * @param {string} revisionId - The ID of the revision to fetch.
@@ -102,41 +122,43 @@ function getRevisionContent(docId, revisionId) {
     throw new Error("Doc ID and Revision ID are required.");
   }
 
-  try {
-    var revision = Drive.Revisions.get(docId, revisionId);
-    
-    // Check for exportLinks (v2)
-    var exportLinks = revision.exportLinks;
-    
-    if (exportLinks && exportLinks['text/plain']) {
-      var url = exportLinks['text/plain'];
+  var maxRetries = 3;
+  var waitTime = 1000; // Start with 1s
+
+  for (var i = 0; i <= maxRetries; i++) {
+    try {
+      var revision = Drive.Revisions.get(docId, revisionId);
+      var exportLinks = revision.exportLinks;
+      var url = (exportLinks && exportLinks['text/plain']) ? 
+                exportLinks['text/plain'] : 
+                "https://docs.google.com/feeds/download/documents/export/Export?id=" + docId + "&revision=" + revisionId + "&exportFormat=txt";
+
       var token = ScriptApp.getOAuthToken();
       var response = UrlFetchApp.fetch(url, {
-        headers: {
-          'Authorization': 'Bearer ' + token
-        }
+        headers: { 'Authorization': 'Bearer ' + token },
+        muteHttpExceptions: true
       });
-      return response.getContentText();
-    } else {
-      // Fallback for v3 or missing links: Legacy Export Endpoint
-      var fallbackUrl = "https://docs.google.com/feeds/download/documents/export/Export?id=" + docId + "&revision=" + revisionId + "&exportFormat=txt";
-      var token = ScriptApp.getOAuthToken();
-      try {
-        var response = UrlFetchApp.fetch(fallbackUrl, {
-          headers: { 'Authorization': 'Bearer ' + token },
-          muteHttpExceptions: true
-        });
-        if (response.getResponseCode() === 200) {
-          return response.getContentText();
-        }
-      } catch (e) {
-        console.warn("Fallback fetch failed: " + e.message);
-      }
 
-      return "Content preview not available (API Version Mismatch or Export Failed).";
+      var code = response.getResponseCode();
+      
+      if (code === 200) {
+        return response.getContentText();
+      } else if (code === 429 && i < maxRetries) {
+        // Rate limited - wait and retry
+        console.warn("429 Rate Limit hit. Retrying in " + waitTime + "ms...");
+        Utilities.sleep(waitTime);
+        waitTime *= 2; // Exponential backoff
+        continue;
+      } else {
+        throw new Error("API returned code " + code + ": " + response.getContentText().substring(0, 100));
+      }
+    } catch (e) {
+      if (i === maxRetries) {
+        console.error("Error loading content after " + maxRetries + " retries: " + e.message);
+        return "Error loading content: " + e.message;
+      }
+      Utilities.sleep(waitTime);
+      waitTime *= 2;
     }
-  } catch (e) {
-    console.error("Error loading content: " + e.message);
-    return "Error loading content: " + e.message;
   }
 }

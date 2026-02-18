@@ -2,48 +2,388 @@
   // DOM Elements
   const statusEl = document.getElementById('status-message');
   const analyzeBtn = document.getElementById('analyze-btn');
+  const folderPickerBtn = document.getElementById('folder-picker-btn');
   const docIdInput = document.getElementById('doc-id-input');
-  const analysisView = document.getElementById('analysis-view');
+  
+  // Playback Elements
+  const playbackUI = document.getElementById('main-app-container');
+  const playPauseBtn = document.getElementById('play-pause-btn');
+  const slider = document.getElementById('timeline-slider');
+  const paperContent = document.getElementById('paper-content');
+  const listContainer = document.getElementById('document-list');
+  
+  const currentRevInfoEl = document.getElementById('current-rev-info');
+  const currentRevDateEl = document.getElementById('current-rev-date');
+  const speedSelector = document.getElementById('playback-speed');
+  const jumpLatestBtn = document.getElementById('jump-latest-btn');
+  const connectDbBtn = document.getElementById('connect-db-btn');
+  const activeUnitTab = document.getElementById('active-unit-tab');
+
+  // State
+  let activeDb = null;
+  let allRevisions = [];
+  let currentIndex = 0;
+  let isPlaying = false;
+  let playInterval = null;
+  let contentCache = {}; 
+  let currentDocId = null;
+  let dmp = null;
+  let pendingRequests = {};
+  let backgroundFetchingActive = false;
+
+  // Initialization
+  window.onload = function() {
+    try {
+      if (typeof diff_match_patch !== 'undefined') {
+        dmp = new diff_match_patch();
+      }
+      document.getElementById('loading-fallback').style.display = 'none';
+      document.getElementById('main-app-container').classList.remove('hidden');
+      document.getElementById('main-app-container').style.display = 'flex';
+      
+      // Auto-connect default db if possible
+      handleConnectDb("ReVisor_Main_Database");
+      
+      showStatus('ReVisor Studio Ready', 'success');
+    } catch (e) {
+      handleError({ message: 'Initialization failed: ' + e.message });
+    }
+  };
 
   // Event Listeners
   analyzeBtn.addEventListener('click', handleAnalyzeClick);
+  folderPickerBtn.addEventListener('click', handleFolderPickerClick);
+  connectDbBtn.addEventListener('click', () => {
+    const name = prompt("Enter a Database/Unit Name (e.g. 'Grade 10 Unit 1' or '2026 Writing Portfolio'):");
+    if (name) handleConnectDb(name);
+  });
+  playPauseBtn.addEventListener('click', togglePlay);
+  jumpLatestBtn.addEventListener('click', () => jumpToRevision(allRevisions.length - 1));
+  slider.addEventListener('input', (e) => jumpToRevision(parseInt(e.target.value)));
 
-  function handleAnalyzeClick() {
-    const docId = docIdInput.value.trim();
-    if (!docId) {
-      showStatus('Please enter a Document ID.', 'error');
+  function handleFolderPickerClick() {
+    const folderId = prompt("Please enter a Google Drive Folder ID or URL:");
+    if (!folderId) return;
+    showStatus('Fetching documents...', 'loading');
+    google.script.run
+      .withSuccessHandler(renderFolderDocs)
+      .withFailureHandler(handleError)
+      .apiListFolderDocs(folderId);
+  }
+
+  function renderFolderDocs(docs) {
+    if (!docs || docs.length === 0) {
+      showStatus('No docs found.', 'warning');
       return;
     }
+    showStatus(`Found ${docs.length} docs.`, 'success');
+    listContainer.innerHTML = '<h3>Select a Document</h3>';
+    docs.forEach(doc => {
+      const el = document.createElement('div');
+      el.className = 'revision-item';
+      el.innerHTML = `<strong>${doc.name}</strong><br><span style="font-size:0.75rem;">Updated: ${new Date(doc.lastUpdated).toLocaleDateString()}</span>`;
+      el.onclick = () => { docIdInput.value = doc.id; handleAnalyzeClick(); };
+      listContainer.appendChild(el);
+    });
+  }
 
-    showStatus('Fetching revision history...', 'loading');
+  function handleConnectDb(name) {
+    google.script.run
+      .withSuccessHandler((db) => {
+        activeDb = db;
+        document.getElementById('db-prompt').style.display = 'none';
+        document.getElementById('db-info').style.display = 'block';
+        document.getElementById('db-link').href = db.url;
+        document.getElementById('db-link').textContent = db.name;
+        
+        // Populate tabs
+        activeUnitTab.innerHTML = '';
+        db.tabs.forEach(t => {
+          const opt = document.createElement('option');
+          opt.value = t; opt.textContent = t;
+          activeUnitTab.appendChild(opt);
+        });
+        showStatus('Database connected.', 'success');
+      })
+      .withFailureHandler(handleError)
+      .apiConnectDatabase(name);
+  }
+
+  function handleAnalyzeClick() {
+    let docId = docIdInput.value.trim();
+    const rubric = document.getElementById('rubric-input').value.trim();
+    if (!docId) return showStatus('Enter a Doc ID.', 'error');
+
+    const urlMatch = docId.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (urlMatch && urlMatch[1]) docId = urlMatch[1];
+    
+    currentDocId = docId;
+    resetPlayer();
+    
+    showProgress(true, 'Analyzing Document...', 10, 'Step 1/3: Fetching Revision History');
     
     google.script.run
-      .withSuccessHandler(renderAnalysis)
+      .withSuccessHandler(async (revisions) => {
+        if (!revisions || revisions.length === 0) {
+          showProgress(false);
+          return showStatus('No history found.', 'warning');
+        }
+        
+        allRevisions = revisions;
+        renderHistoryList(revisions);
+        setupTimeline(revisions);
+
+        showProgress(true, 'Initializing Preview...', 30, 'Step 2/3: Pre-loading latest revisions');
+        const latestIndices = Array.from({length: 5}, (_, i) => revisions.length - 1 - i).filter(idx => idx >= 0);
+        
+        for (const idx of latestIndices) {
+          await fetchWithCache(revisions[idx].id);
+        }
+
+        showProgress(false); 
+        showStatus('Streaming history in background...', 'loading');
+        
+        jumpToRevision(revisions.length - 1);
+        startBackgroundFetch(revisions);
+        
+        // Parallelize: Run AI Analysis and auto-save
+        google.script.run
+          .withSuccessHandler((report) => {
+            displayAnalysisResults(report);
+            
+            // AUTOMATIC DATABASE LOGGING
+            if (activeDb) {
+              const tab = activeUnitTab.value;
+              showStatus(`Logging to ${activeDb.name}...`, 'loading');
+              google.script.run
+                .withSuccessHandler(() => showStatus('Analysis synced to database.', 'success'))
+                .apiSaveAnalysis(report, tab);
+            }
+          })
+          .withFailureHandler(handleError)
+          .apiAnalyzeDocument(docId, rubric);
+      })
       .withFailureHandler(handleError)
       .apiGetRevisions(docId);
   }
 
-  function renderAnalysis(revisions) {
-    showStatus(`Loaded ${revisions.length} revisions.`, 'success');
-    
-    // Simple render for now
-    let html = '<h3>Revision History</h3><ul>';
-    revisions.forEach(rev => {
-      const date = new Date(rev.modifiedDate).toLocaleString();
-      html += `<li><strong>${date}</strong> by ${rev.lastModifyingUserName}</li>`;
-    });
-    html += '</ul>';
-    
-    analysisView.innerHTML = html;
+  async function startBackgroundFetch(revisions) {
+    backgroundFetchingActive = true;
+    // We fetch backwards from newest to oldest
+    for (let i = revisions.length - 1; i >= 0; i--) {
+      if (currentDocId !== currentDocId || !backgroundFetchingActive) break; // Check for race conditions
+      
+      const rev = revisions[i];
+      if (!contentCache[rev.id]) {
+        try {
+          await fetchWithCache(rev.id);
+          markRevisionAsCached(i);
+        } catch (e) {
+          console.warn('Background fetch error:', e);
+        }
+      } else {
+        markRevisionAsCached(i);
+      }
+    }
+    showStatus('Full history cached.', 'success');
   }
 
-  function handleError(error) {
-    showStatus('Error: ' + error.message, 'error');
-    console.error(error);
+  function runAiAnalysis(docId, rubric) {
+    google.script.run
+      .withSuccessHandler(displayAnalysisResults)
+      .withFailureHandler(handleError)
+      .apiAnalyzeDocument(docId, rubric);
+  }
+
+  function fetchWithCache(revId) {
+    return new Promise((resolve, reject) => {
+      if (contentCache[revId]) return resolve(contentCache[revId]);
+      if (pendingRequests[revId]) return pendingRequests[revId].push({ resolve, reject });
+
+      pendingRequests[revId] = [{ resolve, reject }];
+      google.script.run
+        .withSuccessHandler((content) => {
+          contentCache[revId] = content;
+          pendingRequests[revId].forEach(p => p.resolve(content));
+          delete pendingRequests[revId];
+        })
+        .withFailureHandler((err) => {
+          pendingRequests[revId].forEach(p => p.reject(err));
+          delete pendingRequests[revId];
+        })
+        .apiGetRevisionContent(currentDocId, revId);
+    });
+  }
+
+  function jumpToRevision(index) {
+    if (index < 0 || index >= allRevisions.length) return;
+    currentIndex = index;
+    slider.value = index;
+    
+    const rev = allRevisions[index];
+    currentRevInfoEl.textContent = `Revision ${index + 1} of ${allRevisions.length}`;
+    currentRevDateEl.textContent = new Date(rev.modifiedDate).toLocaleString();
+
+    document.querySelectorAll('.revision-item').forEach(el => el.classList.remove('active'));
+    const item = document.getElementById(`rev-item-${index}`);
+    if (item) {
+      item.classList.add('active');
+      item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    loadContentAndShowDiff(index);
+  }
+
+  async function loadContentAndShowDiff(index) {
+    const rev = allRevisions[index];
+    const prevRev = index > 0 ? allRevisions[index - 1] : null;
+    
+    if (contentCache[rev.id] && (!prevRev || contentCache[prevRev.id])) {
+      renderDiffInternal(contentCache[rev.id], prevRev ? contentCache[prevRev.id] : null);
+    } else {
+      paperContent.innerHTML = '<div style="text-align:center; padding-top: 50px;">Fetching content...</div>';
+      try {
+        const cur = await fetchWithCache(rev.id);
+        const prev = prevRev ? await fetchWithCache(prevRev.id) : null;
+        if (currentIndex === index) renderDiffInternal(cur, prev);
+      } catch (e) {
+        handleError(e);
+      }
+    }
+  }
+
+  function renderDiffInternal(cur, prev) {
+    if (!prev) {
+      paperContent.innerHTML = escapeHtml(cur);
+    } else {
+      const diffs = dmp.diff_main(prev, cur);
+      dmp.diff_cleanupSemantic(diffs);
+      let html = '';
+      diffs.forEach(d => {
+        const op = d[0], txt = escapeHtml(d[1]);
+        if (op === 1) html += `<ins class="diff-add">${txt}</ins>`;
+        else if (op === -1) html += `<del class="diff-del">${txt}</del>`;
+        else html += `<span>${txt}</span>`;
+      });
+      paperContent.innerHTML = html;
+    }
+  }
+
+  function setupTimeline(revisions) {
+    slider.disabled = false;
+    slider.min = 0;
+    slider.max = revisions.length - 1;
+    slider.value = revisions.length - 1;
+  }
+
+  function renderHistoryList(revisions) {
+    listContainer.innerHTML = '';
+    revisions.forEach((rev, i) => {
+      const el = document.createElement('div');
+      el.className = 'revision-item';
+      el.id = `rev-item-${i}`;
+      el.innerHTML = `<strong>${rev.lastModifyingUserName || 'Unknown'}</strong><br>${new Date(rev.modifiedDate).toLocaleTimeString()}`;
+      el.onclick = () => jumpToRevision(i);
+      listContainer.prepend(el); // Newest on top
+    });
+  }
+
+  function markRevisionAsCached(idx) {
+    const el = document.getElementById(`rev-item-${idx}`);
+    if (el) el.classList.add('cached');
+  }
+
+  function displayAnalysisResults(report) {
+    const panel = document.getElementById('ai-insights-panel');
+    const content = document.getElementById('ai-content');
+    panel.classList.remove('hidden');
+    
+    let html = '';
+    if (report.aiInsight?.error) {
+      html = `<div class="error-text">AI unavailable: ${report.aiInsight.error}</div>`;
+    } else {
+      const insight = report.aiInsight || {};
+      html += `<h4>Process Evaluation</h4>`;
+      html += `<div class="flag-item">Consistency Score: <strong>${insight.voiceConsistency || '??'}/100</strong></div>`;
+      html += `<div class="flag-item">Writing Level: <strong>${insight.vocabularyLevel || '??'}</strong></div>`;
+      
+      if (insight.rubricAlignment) {
+        html += `<h4>Rubric Feedback</h4><p>${insight.rubricAlignment}</p>`;
+      }
+      
+      if (report.flags?.length) {
+        html += `<h4>Process Flags</h4>`;
+        report.flags.forEach(f => {
+          html += `<div class="flag-item" style="color:#d93025">⚠️ ${f.type}: ${f.message}</div>`;
+        });
+      }
+
+      if (report.processQuestions?.length) {
+        html += `<h4>Conversation Starters</h4><ul>`;
+        report.processQuestions.forEach(q => html += `<li>${q}</li>`);
+        html += `</ul>`;
+      }
+    }
+    content.innerHTML = html;
+  }
+
+  function togglePlay() {
+    if (isPlaying) { pause(); } else { play(); }
+  }
+
+  function play() {
+    isPlaying = true;
+    playPauseBtn.textContent = '⏸';
+    playInterval = setInterval(() => {
+      if (currentIndex < allRevisions.length - 1) {
+        jumpToRevision(currentIndex + 1);
+      } else {
+        pause();
+      }
+    }, parseInt(speedSelector.value));
+  }
+
+  function pause() {
+    isPlaying = false;
+    playPauseBtn.textContent = '▶';
+    clearInterval(playInterval);
+  }
+
+  function resetPlayer() {
+    pause();
+    backgroundFetchingActive = false;
+    contentCache = {};
+    paperContent.innerHTML = '';
+    document.getElementById('ai-insights-panel').classList.add('hidden');
+    listContainer.innerHTML = '';
+  }
+
+  function showProgress(show, stepText = '', percent = 0, detailText = '') {
+    const overlay = document.getElementById('progress-overlay');
+    if (show) {
+      overlay.classList.remove('hidden');
+      document.getElementById('progress-bar-fill').style.width = percent + '%';
+      document.getElementById('progress-detail').textContent = detailText;
+      document.getElementById('progress-step').textContent = stepText;
+    } else {
+      overlay.classList.add('hidden');
+    }
   }
 
   function showStatus(msg, type) {
     statusEl.textContent = msg;
-    statusEl.className = 'status-bar ' + (type || '');
+    statusEl.style.color = type === 'error' ? '#d93025' : (type === 'success' ? '#1e8e3e' : '#5f6368');
+  }
+
+  function handleError(e) {
+    showStatus('Error: ' + e.message, 'error');
+    console.error(e);
+    showProgress(false);
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 </script>
