@@ -386,7 +386,14 @@
         const el = document.createElement('div');
         el.className = 'revision-item';
         el.id = `rev-item-${i}`;
-        el.innerHTML = `<strong>${rev.lastModifyingUserName || 'Unknown'}</strong><br>${new Date(rev.modifiedDate).toLocaleTimeString()}`;
+        // Material List Item Structure
+        el.innerHTML = `
+          <span class="material-symbols-outlined" style="color:var(--md-sys-color-secondary); font-size:20px;">history</span>
+          <div style="flex:1;">
+             <strong class="body-medium">${rev.lastModifyingUserName || 'Unknown'}</strong>
+             <div class="meta">${new Date(rev.modifiedDate).toLocaleString(undefined, {dateStyle:'short', timeStyle:'short'})}</div>
+          </div>
+        `;
         el.onclick = () => this.jumpTo(i, true);
         listContainer.prepend(el);
       });
@@ -437,11 +444,17 @@
       return;
     }
     showStatus(`Found ${docs.length} docs.`, 'success');
-    listContainer.innerHTML = '<h3>Select a Document</h3>';
+    listContainer.innerHTML = '<h3 class="label-large" style="margin: 0 0 8px 16px;">Select a Document</h3>';
     docs.forEach(doc => {
       const el = document.createElement('div');
       el.className = 'revision-item';
-      el.innerHTML = `<strong>${doc.name}</strong><br><span style="font-size:0.75rem;">Updated: ${new Date(doc.lastUpdated).toLocaleDateString()}</span>`;
+      el.innerHTML = `
+        <span class="material-symbols-outlined" style="color:var(--md-sys-color-primary);">description</span>
+        <div style="flex:1;">
+           <strong class="body-medium">${doc.name}</strong>
+           <div class="meta">Updated: ${new Date(doc.lastUpdated).toLocaleDateString()}</div>
+        </div>
+      `;
       el.onclick = () => { docIdInput.value = doc.id; handleAnalyzeClick(); };
       listContainer.appendChild(el);
     });
@@ -525,27 +538,27 @@
     
     let html = '';
     if (report.aiInsight?.error) {
-      html = `<div class="error-text">AI unavailable: ${report.aiInsight.error}</div>`;
+      html = `<div class="error-text" style="color:var(--md-sys-color-error);">AI unavailable: ${report.aiInsight.error}</div>`;
     } else {
       const insight = report.aiInsight || {};
-      html += `<h4>Process Evaluation</h4>`;
-      html += `<div class="flag-item">Consistency Score: <strong>${insight.voiceConsistency || '??'}/100</strong></div>`;
-      html += `<div class="flag-item">Writing Level: <strong>${insight.vocabularyLevel || '??'}</strong></div>`;
+      html += `<h4 class="label-large">Process Evaluation</h4>`;
+      html += `<div class="flag-item"><span class="material-symbols-outlined" style="font-size:16px;">score</span> Consistency Score: <strong>${insight.voiceConsistency || '??'}/100</strong></div>`;
+      html += `<div class="flag-item"><span class="material-symbols-outlined" style="font-size:16px;">school</span> Writing Level: <strong>${insight.vocabularyLevel || '??'}</strong></div>`;
       
       if (insight.rubricAlignment) {
-        html += `<h4>Rubric Feedback</h4><p>${insight.rubricAlignment}</p>`;
+        html += `<h4 class="label-large">Rubric Feedback</h4><p class="body-medium">${insight.rubricAlignment}</p>`;
       }
       
       if (report.flags?.length) {
-        html += `<h4>Process Flags</h4>`;
+        html += `<h4 class="label-large">Process Flags</h4>`;
         report.flags.forEach(f => {
-          html += `<div class="flag-item" style="color:#d93025">⚠️ ${f.type}: ${f.message}</div>`;
+          html += `<div class="flag-item" style="color:var(--md-sys-color-error);"><span class="material-symbols-outlined" style="font-size:16px;">warning</span> ${f.type}: ${f.message}</div>`;
         });
       }
 
       if (report.processQuestions?.length) {
-        html += `<h4>Conversation Starters</h4><ul>`;
-        report.processQuestions.forEach(q => html += `<li>${q}</li>`);
+        html += `<h4 class="label-large">Conversation Starters</h4><ul style="margin:0; padding-left:20px;">`;
+        report.processQuestions.forEach(q => html += `<li class="body-medium">${q}</li>`);
         html += `</ul>`;
       }
     }
