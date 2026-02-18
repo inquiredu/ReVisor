@@ -72,6 +72,13 @@ function apiGetRevisionContent(docId, revId) {
 }
 
 /**
+ * API: Fetches content for multiple revisions in a batch.
+ */
+function apiFetchRevisionContentBatch(urls) {
+  return fetchRevisionContentBatch(urls);
+}
+
+/**
  * API: Connects to or creates a "ReVisor Unit Database" Spreadsheet.
  */
 function apiConnectDatabase(unitName) {
@@ -89,7 +96,7 @@ function apiConnectDatabase(unitName) {
 }
 
 /**
- * API: Saves the current analysis to the active database.
+ * API: Saves the analysis to the active database.
  */
 function apiSaveAnalysis(report, tabName) {
   var ssId = PropertiesService.getScriptProperties().getProperty('ACTIVE_DB_ID');

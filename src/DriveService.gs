@@ -44,7 +44,7 @@ function getRevisionHistory(docId) {
       // v2 fields: items(id,modifiedDate,lastModifyingUserName,lastModifyingUser(displayName),fileSize)
       var response = Drive.Revisions.list(docId, {
         pageToken: pageToken,
-        fields: "items(id,modifiedDate,lastModifyingUserName,lastModifyingUser(displayName),fileSize),nextPageToken"
+        fields: "items(id,modifiedDate,lastModifyingUserName,lastModifyingUser(displayName),fileSize,exportLinks),nextPageToken"
       });
       
       // Handle v2 'items' or v3 'revisions'
@@ -86,7 +86,8 @@ function analyzeRevisions(revisions) {
       id: rev.id,
       modifiedDate: rev.modifiedDate,
       lastModifyingUserName: rev.lastModifyingUserName,
-      fileSize: rev.original.fileSize || 0 
+      fileSize: rev.original.fileSize || 0,
+      exportLinks: rev.original.exportLinks || {}
     };
   });
 }
@@ -160,5 +161,41 @@ function getRevisionContent(docId, revisionId) {
       Utilities.sleep(waitTime);
       waitTime *= 2;
     }
+  }
+}
+
+/**
+ * Fetches content for multiple revisions in parallel.
+ *
+ * @param {Array<string>} urls - Array of export URLs.
+ * @returns {Array<string|null>} Array of content strings or null if failed.
+ */
+function fetchRevisionContentBatch(urls) {
+  if (!urls || urls.length === 0) return [];
+
+  var token = ScriptApp.getOAuthToken();
+  var requests = urls.map(function(url) {
+    return {
+      url: url,
+      method: 'get',
+      headers: { 'Authorization': 'Bearer ' + token },
+      muteHttpExceptions: true
+    };
+  });
+
+  try {
+    var responses = UrlFetchApp.fetchAll(requests);
+    return responses.map(function(response) {
+      if (response.getResponseCode() === 200) {
+        return response.getContentText();
+      } else {
+        console.warn('Batch fetch error: ' + response.getResponseCode());
+        return null; // or handle specific error codes
+      }
+    });
+  } catch (e) {
+    console.error('Batch fetch exception: ' + e.message);
+    // Fallback or return partial failure
+    return urls.map(function() { return null; });
   }
 }

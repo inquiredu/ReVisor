@@ -19,32 +19,392 @@
   const connectDbBtn = document.getElementById('connect-db-btn');
   const activeUnitTab = document.getElementById('active-unit-tab');
 
-  // State
-  let activeDb = null;
-  let allRevisions = [];
-  let currentIndex = 0;
-  let isPlaying = false;
-  let playInterval = null;
-  let contentCache = {}; 
-  let currentDocId = null;
-  let dmp = null;
-  let pendingRequests = {};
-  let backgroundFetchingActive = false;
+  // --- Playback Engine Class ---
+  class PlaybackEngine {
+    constructor() {
+      this.revisions = [];
+      this.currentIndex = 0;
+      this.isPlaying = false;
+      this.contentCache = {};
+      this.fetchQueue = new Set();
+      this.dmp = (typeof diff_match_patch !== 'undefined') ? new diff_match_patch() : null;
+      this.activeDb = null;
+      this.currentDocId = null;
 
-  // Initialization
-  window.onload = function() {
-    try {
-      if (typeof diff_match_patch !== 'undefined') {
-        dmp = new diff_match_patch();
-      }
+      // Animation & Rendering
+      this.animationFrameId = null;
+      this.lastFrameTime = 0;
+      this.speedConfig = {
+        '2000': 0.5, // Slow
+        '1000': 1.0, // Normal
+        '400': 2.5,  // Fast
+        '150': 5.0   // Turbo
+      };
+    }
+
+    init() {
       document.getElementById('loading-fallback').style.display = 'none';
       document.getElementById('main-app-container').classList.remove('hidden');
       document.getElementById('main-app-container').style.display = 'flex';
       
-      // Auto-connect default db if possible
+      // Auto-connect default db
       handleConnectDb("ReVisor_Main_Database");
-      
       showStatus('ReVisor Studio Ready', 'success');
+    }
+
+    reset() {
+      this.stop();
+      this.revisions = [];
+      this.currentIndex = 0;
+      this.contentCache = {};
+      this.fetchQueue.clear();
+      paperContent.innerHTML = '';
+      document.getElementById('ai-insights-panel').classList.add('hidden');
+      listContainer.innerHTML = '';
+    }
+
+    load(revisions, docId) {
+      this.reset();
+      this.revisions = revisions;
+      this.currentDocId = docId;
+      this.currentIndex = revisions.length - 1;
+
+      this.renderHistoryList();
+      this.setupTimeline();
+
+      // Initial Load
+      this.jumpTo(this.currentIndex, true);
+    }
+
+    stop() {
+      this.isPlaying = false;
+      playPauseBtn.textContent = '▶';
+      if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
+    }
+
+    togglePlay() {
+      if (this.isPlaying) this.pause();
+      else this.play();
+    }
+
+    play() {
+      this.isPlaying = true;
+      playPauseBtn.textContent = '⏸';
+      this.lastFrameTime = performance.now();
+      this.animationFrameId = requestAnimationFrame((t) => this.tick(t));
+    }
+
+    pause() {
+      this.stop();
+    }
+
+    async fetchBatch() {
+      const BATCH_SIZE = 5;
+      const LOOKAHEAD = 10;
+
+      // Identify needed revisions (Lookahead + Previous for Diff)
+      const neededIndices = [];
+      if (this.currentIndex > 0) neededIndices.push(this.currentIndex - 1);
+      for (let i = 0; i < LOOKAHEAD; i++) {
+        const idx = this.currentIndex + i;
+        if (idx >= 0 && idx < this.revisions.length) neededIndices.push(idx);
+      }
+
+      const missingRevisions = neededIndices
+        .map(i => this.revisions[i])
+        .filter(rev => rev && !this.contentCache[rev.id] && !this.fetchQueue.has(rev.id));
+
+      if (missingRevisions.length === 0) return;
+
+      // Take a batch
+      const batch = missingRevisions.slice(0, BATCH_SIZE);
+      const batchIds = batch.map(r => r.id);
+
+      // Add to queue
+      batchIds.forEach(id => this.fetchQueue.add(id));
+
+      // Prepare URLs
+      const urls = batch.map(rev => {
+        const links = rev.exportLinks || {};
+        // Prioritize CSV for Sheets, Plain Text for others
+        if (links['text/csv']) return links['text/csv'];
+        if (links['text/plain']) return links['text/plain'];
+        return `https://docs.google.com/feeds/download/documents/export/Export?id=${this.currentDocId}&revision=${rev.id}&exportFormat=txt`;
+      });
+
+      console.log('Fetching batch:', batchIds);
+      if (this.isPlaying) showStatus(`Buffering...`, 'loading');
+
+      return new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler((contents) => {
+            batch.forEach((rev, i) => {
+              if (contents[i] !== null) {
+                this.contentCache[rev.id] = contents[i];
+                // Mark UI as cached
+                const el = document.getElementById(`rev-item-${this.revisions.indexOf(rev)}`);
+                if (el) el.classList.add('cached');
+              } else {
+                console.warn(`Failed to fetch content for rev ${rev.id}`);
+              }
+              this.fetchQueue.delete(rev.id);
+            });
+            if (this.isPlaying) showStatus('Playing...', 'success');
+            else showStatus('Ready.', 'success');
+            resolve();
+          })
+          .withFailureHandler((e) => {
+            console.error('Batch fetch failed', e);
+            batchIds.forEach(id => this.fetchQueue.delete(id));
+            reject(e);
+          })
+          .apiFetchRevisionContentBatch(urls);
+      });
+    }
+
+    async jumpTo(index, immediate = false) {
+      if (index < 0 || index >= this.revisions.length) return;
+
+      this.currentIndex = index;
+      slider.value = index;
+
+      // Update UI Info
+      const rev = this.revisions[index];
+      currentRevInfoEl.textContent = `Revision ${index + 1} of ${this.revisions.length}`;
+      currentRevDateEl.textContent = new Date(rev.modifiedDate).toLocaleString();
+
+      // Highlight list item
+      document.querySelectorAll('.revision-item').forEach(el => el.classList.remove('active'));
+      const item = document.getElementById(`rev-item-${index}`);
+      if (item) {
+        item.classList.add('active');
+        item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      // Check cache
+      const prevRev = index > 0 ? this.revisions[index - 1] : null;
+
+      if (this.contentCache[rev.id] && (!prevRev || this.contentCache[prevRev.id])) {
+        // We have content, render immediately
+        this.renderFrame(this.contentCache[rev.id], prevRev ? this.contentCache[prevRev.id] : null);
+      } else {
+        if (immediate) {
+             showStatus('Buffering...', 'loading');
+             await this.fetchBatch(); // Trigger urgent fetch
+             // Try render again after fetch
+             if (this.contentCache[rev.id]) {
+                 this.renderFrame(this.contentCache[rev.id], prevRev ? this.contentCache[prevRev.id] : null);
+             }
+        } else {
+          // Just trigger fetch for background
+          this.fetchBatch();
+        }
+      }
+    }
+
+    renderFrame(cur, prev) {
+       // Detect CSV (Basic heuristic: multiple lines and commas)
+       if (cur && cur.split('\n').length > 1 && (cur.indexOf(',') > -1 || cur.indexOf('\t') > -1)) {
+          this.renderCSV(cur, prev);
+          return;
+       }
+
+       if (!prev || !this.dmp) {
+         paperContent.innerHTML = escapeHtml(cur);
+       } else {
+         const diffs = this.dmp.diff_main(prev, cur);
+         this.dmp.diff_cleanupSemantic(diffs);
+         let html = '';
+         diffs.forEach(d => {
+           const op = d[0], txt = escapeHtml(d[1]);
+           if (op === 1) html += `<ins class="diff-add">${txt}</ins>`;
+           else if (op === -1) html += `<del class="diff-del">${txt}</del>`;
+           else html += `<span>${txt}</span>`;
+         });
+         paperContent.innerHTML = html;
+       }
+    }
+
+    renderCSV(cur, prev) {
+        const rows = cur.split('\n');
+        let html = '<table style="border-collapse: collapse; width: 100%; font-size: 0.8rem;">';
+        rows.forEach((row, rIdx) => {
+            if (!row.trim()) return;
+            html += '<tr>';
+            // Regex to split CSV respecting quotes
+            const cells = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+            cells.forEach(cell => {
+                let txt = cell.replace(/^"|"$/g, '').replace(/""/g, '"');
+                html += `<td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(txt)}</td>`;
+            });
+            html += '</tr>';
+        });
+        html += '</table>';
+        paperContent.innerHTML = html;
+    }
+
+    tick(timestamp) {
+      if (!this.isPlaying) return;
+
+      const speedVal = parseInt(speedSelector.value);
+      // Heuristic: 1000 (Normal) -> 50ms per char step
+      let msPerStep = speedVal / 20;
+      if (msPerStep < 4) msPerStep = 4; // Cap max speed
+
+      const elapsed = timestamp - this.lastFrameTime;
+
+      if (elapsed >= msPerStep) {
+        this.lastFrameTime = timestamp;
+        const steps = Math.max(1, Math.floor(elapsed / msPerStep));
+        this.advanceStep(steps);
+      }
+
+      this.animationFrameId = requestAnimationFrame((t) => this.tick(t));
+    }
+
+    advanceStep(steps) {
+        // Ensure we have diffs for current -> next
+        if (!this.diffState || this.diffState.fromIndex !== this.currentIndex) {
+            this.prepareDiffState();
+        }
+
+        if (!this.diffState.valid) {
+            // Cannot animate (e.g. end of history or error), just stop or jump
+            if (this.currentIndex >= this.revisions.length - 1) {
+                this.pause();
+                return;
+            }
+            // If failed to get diff (e.g. loading), try to fetch
+            if (!this.contentCache[this.revisions[this.currentIndex].id] ||
+                !this.contentCache[this.revisions[this.currentIndex+1].id]) {
+                 return; // Waiting for buffer
+            }
+            // Retry prep
+            this.prepareDiffState();
+            if (!this.diffState.valid) return;
+        }
+
+        // Advance cursor
+        this.diffState.cursor += steps;
+
+        // Check if finished revision
+        if (this.diffState.cursor >= this.diffState.totalOps) {
+             this.jumpTo(this.currentIndex + 1);
+             this.diffState = null;
+        } else {
+             this.renderPartial(this.diffState);
+        }
+    }
+
+    prepareDiffState() {
+        const idx = this.currentIndex;
+        const nextIdx = idx + 1;
+        if (nextIdx >= this.revisions.length) {
+            this.diffState = { valid: false };
+            return;
+        }
+
+        const rev = this.revisions[idx];
+        const nextRev = this.revisions[nextIdx];
+        const content1 = this.contentCache[rev.id];
+        const content2 = this.contentCache[nextRev.id];
+
+        if (!content1 || !content2) {
+             this.diffState = { valid: false };
+             return;
+        }
+
+        if (this.isCSV(content2)) {
+            // No typing animation for CSV, just jump
+            this.diffState = { valid: true, isCSV: true, totalOps: 1, cursor: 0 };
+            return;
+        }
+
+        const diffs = this.dmp.diff_main(content1, content2);
+        this.dmp.diff_cleanupSemantic(diffs);
+
+        // Calculate total INSERT chars to animate
+        const totalInserts = diffs.reduce((acc, d) => (d[0] === 1 ? acc + d[1].length : acc), 0);
+
+        this.diffState = {
+            valid: true,
+            fromIndex: idx,
+            diffs: diffs,
+            cursor: 0,
+            totalOps: totalInserts > 0 ? totalInserts : 5 // Minimum frames if only deletes
+        };
+    }
+
+    renderPartial(state) {
+        if (state.isCSV) return;
+
+        let html = '';
+        let insertCursor = 0; // Tracks progress through ALL inserts
+
+        for (let d of state.diffs) {
+            const op = d[0];
+            const text = escapeHtml(d[1]);
+
+            if (op === 0) {
+                // Equal: Always show
+                html += `<span>${text}</span>`;
+            } else if (op === -1) {
+                // Delete: Always show (or could animate removal, but keeping it simple)
+                html += `<del class="diff-del">${text}</del>`;
+            } else if (op === 1) {
+                // Insert: Animate
+                const unescapedText = d[1];
+                const len = unescapedText.length;
+
+                if (insertCursor + len <= state.cursor) {
+                    // Fully revealed
+                    html += `<ins class="diff-add">${text}</ins>`;
+                    insertCursor += len;
+                } else if (insertCursor < state.cursor) {
+                    // Partially revealed
+                    const revealCount = state.cursor - insertCursor;
+                    const partial = escapeHtml(unescapedText.substring(0, revealCount));
+                    html += `<ins class="diff-add">${partial}</ins>`;
+                    insertCursor += len; // We 'consumed' this chunk logic-wise
+                } else {
+                    // Not yet revealed
+                    // html += '';
+                    insertCursor += len;
+                }
+            }
+        }
+        paperContent.innerHTML = html;
+    }
+
+    isCSV(text) {
+        return text && text.split('\n').length > 1 && (text.indexOf(',') > -1 || text.indexOf('\t') > -1);
+    }
+
+    renderHistoryList() {
+      listContainer.innerHTML = '';
+      this.revisions.forEach((rev, i) => {
+        const el = document.createElement('div');
+        el.className = 'revision-item';
+        el.id = `rev-item-${i}`;
+        el.innerHTML = `<strong>${rev.lastModifyingUserName || 'Unknown'}</strong><br>${new Date(rev.modifiedDate).toLocaleTimeString()}`;
+        el.onclick = () => this.jumpTo(i, true);
+        listContainer.prepend(el);
+      });
+    }
+    setupTimeline() {
+      slider.disabled = false;
+      slider.min = 0;
+      slider.max = this.revisions.length - 1;
+      slider.value = this.revisions.length - 1;
+    }
+  }
+
+  const engine = new PlaybackEngine();
+
+  // Initialization
+  window.onload = function() {
+    try {
+      engine.init();
     } catch (e) {
       handleError({ message: 'Initialization failed: ' + e.message });
     }
@@ -57,9 +417,9 @@
     const name = prompt("Enter a Database/Unit Name (e.g. 'Grade 10 Unit 1' or '2026 Writing Portfolio'):");
     if (name) handleConnectDb(name);
   });
-  playPauseBtn.addEventListener('click', togglePlay);
-  jumpLatestBtn.addEventListener('click', () => jumpToRevision(allRevisions.length - 1));
-  slider.addEventListener('input', (e) => jumpToRevision(parseInt(e.target.value)));
+  playPauseBtn.addEventListener('click', () => engine.togglePlay());
+  jumpLatestBtn.addEventListener('click', () => engine.jumpTo(engine.revisions.length - 1, true));
+  slider.addEventListener('input', (e) => engine.jumpTo(parseInt(e.target.value), true));
 
   function handleFolderPickerClick() {
     const folderId = prompt("Please enter a Google Drive Folder ID or URL:");
@@ -90,7 +450,7 @@
   function handleConnectDb(name) {
     google.script.run
       .withSuccessHandler((db) => {
-        activeDb = db;
+        engine.activeDb = db;
         document.getElementById('db-prompt').style.display = 'none';
         document.getElementById('db-info').style.display = 'block';
         document.getElementById('db-link').href = db.url;
@@ -117,34 +477,18 @@
     const urlMatch = docId.match(/\/d\/([a-zA-Z0-9-_]+)/);
     if (urlMatch && urlMatch[1]) docId = urlMatch[1];
     
-    currentDocId = docId;
-    resetPlayer();
-    
     showProgress(true, 'Analyzing Document...', 10, 'Step 1/3: Fetching Revision History');
     
     google.script.run
-      .withSuccessHandler(async (revisions) => {
+      .withSuccessHandler((revisions) => {
         if (!revisions || revisions.length === 0) {
           showProgress(false);
           return showStatus('No history found.', 'warning');
         }
         
-        allRevisions = revisions;
-        renderHistoryList(revisions);
-        setupTimeline(revisions);
-
-        showProgress(true, 'Initializing Preview...', 30, 'Step 2/3: Pre-loading latest revisions');
-        const latestIndices = Array.from({length: 5}, (_, i) => revisions.length - 1 - i).filter(idx => idx >= 0);
-        
-        for (const idx of latestIndices) {
-          await fetchWithCache(revisions[idx].id);
-        }
-
+        engine.load(revisions, docId);
         showProgress(false); 
-        showStatus('Streaming history in background...', 'loading');
-        
-        jumpToRevision(revisions.length - 1);
-        startBackgroundFetch(revisions);
+        showStatus('Ready.', 'success');
         
         // Parallelize: Run AI Analysis and auto-save
         google.script.run
@@ -152,9 +496,9 @@
             displayAnalysisResults(report);
             
             // AUTOMATIC DATABASE LOGGING
-            if (activeDb) {
+            if (engine.activeDb) {
               const tab = activeUnitTab.value;
-              showStatus(`Logging to ${activeDb.name}...`, 'loading');
+              showStatus(`Logging to ${engine.activeDb.name}...`, 'loading');
               google.script.run
                 .withSuccessHandler(() => showStatus('Analysis synced to database.', 'success'))
                 .apiSaveAnalysis(report, tab);
@@ -167,130 +511,11 @@
       .apiGetRevisions(docId);
   }
 
-  async function startBackgroundFetch(revisions) {
-    backgroundFetchingActive = true;
-    // We fetch backwards from newest to oldest
-    for (let i = revisions.length - 1; i >= 0; i--) {
-      if (currentDocId !== currentDocId || !backgroundFetchingActive) break; // Check for race conditions
-      
-      const rev = revisions[i];
-      if (!contentCache[rev.id]) {
-        try {
-          await fetchWithCache(rev.id);
-          markRevisionAsCached(i);
-        } catch (e) {
-          console.warn('Background fetch error:', e);
-        }
-      } else {
-        markRevisionAsCached(i);
-      }
-    }
-    showStatus('Full history cached.', 'success');
-  }
-
   function runAiAnalysis(docId, rubric) {
     google.script.run
       .withSuccessHandler(displayAnalysisResults)
       .withFailureHandler(handleError)
       .apiAnalyzeDocument(docId, rubric);
-  }
-
-  function fetchWithCache(revId) {
-    return new Promise((resolve, reject) => {
-      if (contentCache[revId]) return resolve(contentCache[revId]);
-      if (pendingRequests[revId]) return pendingRequests[revId].push({ resolve, reject });
-
-      pendingRequests[revId] = [{ resolve, reject }];
-      google.script.run
-        .withSuccessHandler((content) => {
-          contentCache[revId] = content;
-          pendingRequests[revId].forEach(p => p.resolve(content));
-          delete pendingRequests[revId];
-        })
-        .withFailureHandler((err) => {
-          pendingRequests[revId].forEach(p => p.reject(err));
-          delete pendingRequests[revId];
-        })
-        .apiGetRevisionContent(currentDocId, revId);
-    });
-  }
-
-  function jumpToRevision(index) {
-    if (index < 0 || index >= allRevisions.length) return;
-    currentIndex = index;
-    slider.value = index;
-    
-    const rev = allRevisions[index];
-    currentRevInfoEl.textContent = `Revision ${index + 1} of ${allRevisions.length}`;
-    currentRevDateEl.textContent = new Date(rev.modifiedDate).toLocaleString();
-
-    document.querySelectorAll('.revision-item').forEach(el => el.classList.remove('active'));
-    const item = document.getElementById(`rev-item-${index}`);
-    if (item) {
-      item.classList.add('active');
-      item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    loadContentAndShowDiff(index);
-  }
-
-  async function loadContentAndShowDiff(index) {
-    const rev = allRevisions[index];
-    const prevRev = index > 0 ? allRevisions[index - 1] : null;
-    
-    if (contentCache[rev.id] && (!prevRev || contentCache[prevRev.id])) {
-      renderDiffInternal(contentCache[rev.id], prevRev ? contentCache[prevRev.id] : null);
-    } else {
-      paperContent.innerHTML = '<div style="text-align:center; padding-top: 50px;">Fetching content...</div>';
-      try {
-        const cur = await fetchWithCache(rev.id);
-        const prev = prevRev ? await fetchWithCache(prevRev.id) : null;
-        if (currentIndex === index) renderDiffInternal(cur, prev);
-      } catch (e) {
-        handleError(e);
-      }
-    }
-  }
-
-  function renderDiffInternal(cur, prev) {
-    if (!prev) {
-      paperContent.innerHTML = escapeHtml(cur);
-    } else {
-      const diffs = dmp.diff_main(prev, cur);
-      dmp.diff_cleanupSemantic(diffs);
-      let html = '';
-      diffs.forEach(d => {
-        const op = d[0], txt = escapeHtml(d[1]);
-        if (op === 1) html += `<ins class="diff-add">${txt}</ins>`;
-        else if (op === -1) html += `<del class="diff-del">${txt}</del>`;
-        else html += `<span>${txt}</span>`;
-      });
-      paperContent.innerHTML = html;
-    }
-  }
-
-  function setupTimeline(revisions) {
-    slider.disabled = false;
-    slider.min = 0;
-    slider.max = revisions.length - 1;
-    slider.value = revisions.length - 1;
-  }
-
-  function renderHistoryList(revisions) {
-    listContainer.innerHTML = '';
-    revisions.forEach((rev, i) => {
-      const el = document.createElement('div');
-      el.className = 'revision-item';
-      el.id = `rev-item-${i}`;
-      el.innerHTML = `<strong>${rev.lastModifyingUserName || 'Unknown'}</strong><br>${new Date(rev.modifiedDate).toLocaleTimeString()}`;
-      el.onclick = () => jumpToRevision(i);
-      listContainer.prepend(el); // Newest on top
-    });
-  }
-
-  function markRevisionAsCached(idx) {
-    const el = document.getElementById(`rev-item-${idx}`);
-    if (el) el.classList.add('cached');
   }
 
   function displayAnalysisResults(report) {
@@ -327,36 +552,6 @@
     content.innerHTML = html;
   }
 
-  function togglePlay() {
-    if (isPlaying) { pause(); } else { play(); }
-  }
-
-  function play() {
-    isPlaying = true;
-    playPauseBtn.textContent = '⏸';
-    playInterval = setInterval(() => {
-      if (currentIndex < allRevisions.length - 1) {
-        jumpToRevision(currentIndex + 1);
-      } else {
-        pause();
-      }
-    }, parseInt(speedSelector.value));
-  }
-
-  function pause() {
-    isPlaying = false;
-    playPauseBtn.textContent = '▶';
-    clearInterval(playInterval);
-  }
-
-  function resetPlayer() {
-    pause();
-    backgroundFetchingActive = false;
-    contentCache = {};
-    paperContent.innerHTML = '';
-    document.getElementById('ai-insights-panel').classList.add('hidden');
-    listContainer.innerHTML = '';
-  }
 
   function showProgress(show, stepText = '', percent = 0, detailText = '') {
     const overlay = document.getElementById('progress-overlay');
