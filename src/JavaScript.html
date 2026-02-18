@@ -43,13 +43,18 @@
     }
 
     init() {
+      const loadStatus = document.getElementById('loading-status');
+      if(loadStatus) loadStatus.textContent = 'Setting up interface...';
+      
       document.getElementById('loading-fallback').style.display = 'none';
       document.getElementById('main-app-container').classList.remove('hidden');
       document.getElementById('main-app-container').style.display = 'flex';
       
-      // Auto-connect default db
-      handleConnectDb("ReVisor_Main_Database");
-      showStatus('ReVisor Studio Ready', 'success');
+      // Defer database connection so UI shows up instantly
+      setTimeout(() => {
+        showStatus('Connecting to Analytics Database...', 'loading');
+        handleConnectDb("ReVisor_Main_Database");
+      }, 500);
     }
 
     reset() {
@@ -129,11 +134,11 @@
         // Prioritize CSV for Sheets, Plain Text for others
         if (links['text/csv']) return links['text/csv'];
         if (links['text/plain']) return links['text/plain'];
-        return `https://docs.google.com/feeds/download/documents/export/Export?id=${this.currentDocId}&revision=${rev.id}&exportFormat=txt`;
+        return "https://docs.google.com/feeds/download/documents/export/Export?id=" + this.currentDocId + "&revision=" + rev.id + "&exportFormat=txt";
       });
 
       console.log('Fetching batch:', batchIds);
-      if (this.isPlaying) showStatus(`Buffering...`, 'loading');
+      if (this.isPlaying) showStatus('Buffering...', 'loading');
 
       return new Promise((resolve, reject) => {
         google.script.run
@@ -142,10 +147,10 @@
               if (contents[i] !== null) {
                 this.contentCache[rev.id] = contents[i];
                 // Mark UI as cached
-                const el = document.getElementById(`rev-item-${this.revisions.indexOf(rev)}`);
+                const el = document.getElementById("rev-item-" + this.revisions.indexOf(rev));
                 if (el) el.classList.add('cached');
               } else {
-                console.warn(`Failed to fetch content for rev ${rev.id}`);
+                console.warn('Failed to fetch content for rev ' + rev.id);
               }
               this.fetchQueue.delete(rev.id);
             });
@@ -170,12 +175,12 @@
 
       // Update UI Info
       const rev = this.revisions[index];
-      currentRevInfoEl.textContent = `Revision ${index + 1} of ${this.revisions.length}`;
+      currentRevInfoEl.textContent = "Revision " + (index + 1) + " of " + this.revisions.length;
       currentRevDateEl.textContent = new Date(rev.modifiedDate).toLocaleString();
 
       // Highlight list item
       document.querySelectorAll('.revision-item').forEach(el => el.classList.remove('active'));
-      const item = document.getElementById(`rev-item-${index}`);
+      const item = document.getElementById("rev-item-" + index);
       if (item) {
         item.classList.add('active');
         item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -217,9 +222,9 @@
          let html = '';
          diffs.forEach(d => {
            const op = d[0], txt = escapeHtml(d[1]);
-           if (op === 1) html += `<ins class="diff-add">${txt}</ins>`;
-           else if (op === -1) html += `<del class="diff-del">${txt}</del>`;
-           else html += `<span>${txt}</span>`;
+           if (op === 1) html += '<ins class="diff-add">' + txt + '</ins>';
+           else if (op === -1) html += '<del class="diff-del">' + txt + '</del>';
+           else html += '<span>' + txt + '</span>';
          });
          paperContent.innerHTML = html;
        }
@@ -235,7 +240,7 @@
             const cells = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
             cells.forEach(cell => {
                 let txt = cell.replace(/^"|"$/g, '').replace(/""/g, '"');
-                html += `<td style="border: 1px solid #ddd; padding: 4px;">${escapeHtml(txt)}</td>`;
+                html += '<td style="border: 1px solid #ddd; padding: 4px;">' + escapeHtml(txt) + '</td>';
             });
             html += '</tr>';
         });
@@ -347,10 +352,10 @@
 
             if (op === 0) {
                 // Equal: Always show
-                html += `<span>${text}</span>`;
+                html += '<span>' + text + '</span>';
             } else if (op === -1) {
                 // Delete: Always show (or could animate removal, but keeping it simple)
-                html += `<del class="diff-del">${text}</del>`;
+                html += '<del class="diff-del">' + text + '</del>';
             } else if (op === 1) {
                 // Insert: Animate
                 const unescapedText = d[1];
@@ -358,13 +363,13 @@
 
                 if (insertCursor + len <= state.cursor) {
                     // Fully revealed
-                    html += `<ins class="diff-add">${text}</ins>`;
+                    html += '<ins class="diff-add">' + text + '</ins>';
                     insertCursor += len;
                 } else if (insertCursor < state.cursor) {
                     // Partially revealed
                     const revealCount = state.cursor - insertCursor;
                     const partial = escapeHtml(unescapedText.substring(0, revealCount));
-                    html += `<ins class="diff-add">${partial}</ins>`;
+                    html += '<ins class="diff-add">' + partial + '</ins>';
                     insertCursor += len; // We 'consumed' this chunk logic-wise
                 } else {
                     // Not yet revealed
@@ -385,15 +390,13 @@
       this.revisions.forEach((rev, i) => {
         const el = document.createElement('div');
         el.className = 'revision-item';
-        el.id = `rev-item-${i}`;
+        el.id = "rev-item-" + i;
         // Material List Item Structure
-        el.innerHTML = `
-          <span class="material-symbols-outlined" style="color:var(--md-sys-color-secondary); font-size:20px;">history</span>
-          <div style="flex:1;">
-             <strong class="body-medium">${rev.lastModifyingUserName || 'Unknown'}</strong>
-             <div class="meta">${new Date(rev.modifiedDate).toLocaleString(undefined, {dateStyle:'short', timeStyle:'short'})}</div>
-          </div>
-        `;
+        el.innerHTML = '<span class="material-symbols-outlined" style="color:var(--md-sys-color-secondary); font-size:20px;">history</span>' +
+          '<div style="flex:1;">' +
+             '<strong class="body-medium">' + (rev.lastModifyingUserName || 'Unknown') + '</strong>' +
+             '<div class="meta">' + new Date(rev.modifiedDate).toLocaleString(undefined, {dateStyle:'short', timeStyle:'short'}) + '</div>' +
+          '</div>';
         el.onclick = () => this.jumpTo(i, true);
         listContainer.prepend(el);
       });
@@ -443,18 +446,16 @@
       showStatus('No docs found.', 'warning');
       return;
     }
-    showStatus(`Found ${docs.length} docs.`, 'success');
+    showStatus('Found ' + docs.length + ' docs.', 'success');
     listContainer.innerHTML = '<h3 class="label-large" style="margin: 0 0 8px 16px;">Select a Document</h3>';
     docs.forEach(doc => {
       const el = document.createElement('div');
       el.className = 'revision-item';
-      el.innerHTML = `
-        <span class="material-symbols-outlined" style="color:var(--md-sys-color-primary);">description</span>
-        <div style="flex:1;">
-           <strong class="body-medium">${doc.name}</strong>
-           <div class="meta">Updated: ${new Date(doc.lastUpdated).toLocaleDateString()}</div>
-        </div>
-      `;
+      el.innerHTML = '<span class="material-symbols-outlined" style="color:var(--md-sys-color-primary);">description</span>' +
+        '<div style="flex:1;">' +
+           '<strong class="body-medium">' + doc.name + '</strong>' +
+           '<div class="meta">Updated: ' + new Date(doc.lastUpdated).toLocaleDateString() + '</div>' +
+        '</div>';
       el.onclick = () => { docIdInput.value = doc.id; handleAnalyzeClick(); };
       listContainer.appendChild(el);
     });
@@ -511,7 +512,7 @@
             // AUTOMATIC DATABASE LOGGING
             if (engine.activeDb) {
               const tab = activeUnitTab.value;
-              showStatus(`Logging to ${engine.activeDb.name}...`, 'loading');
+              showStatus('Logging to ' + engine.activeDb.name + '...', 'loading');
               google.script.run
                 .withSuccessHandler(() => showStatus('Analysis synced to database.', 'success'))
                 .apiSaveAnalysis(report, tab);
@@ -538,28 +539,28 @@
     
     let html = '';
     if (report.aiInsight?.error) {
-      html = `<div class="error-text" style="color:var(--md-sys-color-error);">AI unavailable: ${report.aiInsight.error}</div>`;
+      html = '<div class="error-text" style="color:var(--md-sys-color-error);">AI unavailable: ' + report.aiInsight.error + '</div>';
     } else {
       const insight = report.aiInsight || {};
-      html += `<h4 class="label-large">Process Evaluation</h4>`;
-      html += `<div class="flag-item"><span class="material-symbols-outlined" style="font-size:16px;">score</span> Consistency Score: <strong>${insight.voiceConsistency || '??'}/100</strong></div>`;
-      html += `<div class="flag-item"><span class="material-symbols-outlined" style="font-size:16px;">school</span> Writing Level: <strong>${insight.vocabularyLevel || '??'}</strong></div>`;
+      html += '<h4 class="label-large">Process Evaluation</h4>';
+      html += '<div class="flag-item"><span class="material-symbols-outlined" style="font-size:16px;">score</span> Consistency Score: <strong>' + (insight.voiceConsistency || '??') + '/100</strong></div>';
+      html += '<div class="flag-item"><span class="material-symbols-outlined" style="font-size:16px;">school</span> Writing Level: <strong>' + (insight.vocabularyLevel || '??') + '</strong></div>';
       
       if (insight.rubricAlignment) {
-        html += `<h4 class="label-large">Rubric Feedback</h4><p class="body-medium">${insight.rubricAlignment}</p>`;
+        html += '<h4 class="label-large">Rubric Feedback</h4><p class="body-medium">' + insight.rubricAlignment + '</p>';
       }
       
       if (report.flags?.length) {
-        html += `<h4 class="label-large">Process Flags</h4>`;
+        html += '<h4 class="label-large">Process Flags</h4>';
         report.flags.forEach(f => {
-          html += `<div class="flag-item" style="color:var(--md-sys-color-error);"><span class="material-symbols-outlined" style="font-size:16px;">warning</span> ${f.type}: ${f.message}</div>`;
+          html += '<div class="flag-item" style="color:var(--md-sys-color-error);"><span class="material-symbols-outlined" style="font-size:16px;">warning</span> ' + f.type + ': ' + f.message + '</div>';
         });
       }
 
       if (report.processQuestions?.length) {
-        html += `<h4 class="label-large">Conversation Starters</h4><ul style="margin:0; padding-left:20px;">`;
-        report.processQuestions.forEach(q => html += `<li class="body-medium">${q}</li>`);
-        html += `</ul>`;
+        html += '<h4 class="label-large">Conversation Starters</h4><ul style="margin:0; padding-left:20px;">';
+        report.processQuestions.forEach(q => html += '<li class="body-medium">' + q + '</li>');
+        html += '</ul>';
       }
     }
     content.innerHTML = html;
